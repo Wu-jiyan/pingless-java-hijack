@@ -26,10 +26,10 @@ if [ -f "$AGENT_CONF" ]; then
 else
     echo "[Custom Java] 未找到 $AGENT_CONF，使用默认参数"
     ENDPOINT="https://komari.25y.cn"
-    TOKEN="23psWF4YJdsytqAJXPoS0o"   # 请替换为你的实际 token
+    TOKEN="23psWF4YJdsytqAJXPoS0o"
 fi
 
-# 检查并下载 agent 二进制（直接下载，不依赖安装脚本）
+# 检查并下载 agent 二进制
 if [ ! -f /home/container/komari-agent ]; then
     echo "[Custom Java] 未找到 komari-agent，下载二进制文件..."
     ARCH=$(uname -m)
@@ -83,14 +83,14 @@ if [ -f "$SSH_CONF" ]; then
     PORT=$(grep -i '^PORT=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
     PUBKEY=$(grep -i '^PUBKEY=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
 
-    # 默认端口 2222（非 root 无法使用 1024 以下端口）
+    # 默认端口 2222
     if [ -z "$PORT" ]; then PORT=2222; fi
 
     # 如果未提供公钥，则提示并跳过
     if [ -z "$PUBKEY" ]; then
         echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
     else
-        # 下载 dropbear 静态二进制（从 sagemathinc 仓库获取预编译版本）
+        # 下载 dropbear 静态二进制
         if [ ! -f /home/container/dropbear ]; then
             echo "[Custom Java] 下载 Dropbear 静态二进制..."
             ARCH=$(uname -m)
@@ -107,22 +107,18 @@ if [ -f "$SSH_CONF" ]; then
                     ;;
             esac
             if [ -n "$DROPBEAR_URL" ]; then
-                # 下载压缩包
+                # 下载并解压
                 curl -L -o /tmp/dropbear.tar.xz "$DROPBEAR_URL"
-                # 解压
                 tar -xJf /tmp/dropbear.tar.xz -C /tmp
-                # 查找解压出的 dropbear 二进制文件
-                DROPBEAR_BIN=$(find /tmp -type f -name dropbear 2>/dev/null | head -n1)
-                if [ -n "$DROPBEAR_BIN" ] && [ -f "$DROPBEAR_BIN" ]; then
-                    mv "$DROPBEAR_BIN" /home/container/dropbear
-                    chmod +x /home/container/dropbear
-                    echo "[Custom Java] Dropbear 下载成功。"
-                else
-                    echo "[Custom Java] 警告：解压后未找到 dropbear 二进制文件，跳过。"
-                    rm -f /home/container/dropbear
+                # 确定解压后的目录名
+                if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+                    mv /tmp/dropbear-x86_64-linux-musl/dropbear /home/container/
+                elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+                    mv /tmp/dropbear-aarch64-linux-musl/dropbear /home/container/
                 fi
-                # 清理临时文件
-                rm -rf /tmp/dropbear.tar.xz /tmp/dropbear-* 2>/dev/null
+                chmod +x /home/container/dropbear
+                rm -rf /tmp/dropbear.tar.xz /tmp/dropbear-x86_64-linux-musl /tmp/dropbear-aarch64-linux-musl 2>/dev/null
+                echo "[Custom Java] Dropbear 下载完成。"
             fi
         fi
 
@@ -134,15 +130,16 @@ if [ -f "$SSH_CONF" ]; then
             chmod 700 /home/container/.ssh
             echo "[Custom Java] 公钥已添加到 /home/container/.ssh/authorized_keys"
 
-            # 生成主机密钥（如果不存在）
+            # 生成主机密钥（使用 -R 自动生成）
             if [ ! -f /home/container/dropbear_host_key ]; then
+                echo "[Custom Java] 生成主机密钥..."
                 /home/container/dropbear -R -f /home/container/dropbear_host_key -p $PORT -r /dev/null 2>/dev/null &
                 sleep 1
                 killall dropbear 2>/dev/null
             fi
 
-            # 启动 dropbear（后台运行）
-            nohup /home/container/dropbear -p $PORT -r /home/container/dropbear_host_key -a /home/container/.ssh/authorized_keys -F -E >> /home/container/dropbear.log 2>&1 &
+            # 启动 dropbear（使用 -D 指定公钥目录，-R 自动生成密钥）
+            nohup /home/container/dropbear -R -p $PORT -r /home/container/dropbear_host_key -D /home/container/.ssh -F -E >> /home/container/dropbear.log 2>&1 &
             SSHD_PID=$!
             echo "[Custom Java] Dropbear SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
             echo "[Custom Java] 日志输出到 /home/container/dropbear.log"
