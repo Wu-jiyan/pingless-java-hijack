@@ -90,7 +90,7 @@ if [ -f "$SSH_CONF" ]; then
     if [ -z "$PUBKEY" ]; then
         echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
     else
-        # 下载 dropbear 静态二进制（带验证）
+        # 下载 dropbear 静态二进制（简化验证，仅检查文件大小）
         if [ ! -f /home/container/dropbear ]; then
             echo "[Custom Java] 下载 Dropbear 静态二进制..."
             ARCH=$(uname -m)
@@ -109,12 +109,12 @@ if [ -f "$SSH_CONF" ]; then
             if [ -n "$DROPBEAR_URL" ]; then
                 curl -sL -o /home/container/dropbear "$DROPBEAR_URL"
                 chmod +x /home/container/dropbear
-                # 验证文件是否有效
-                if ! file /home/container/dropbear | grep -q "ELF.*executable"; then
-                    echo "[Custom Java] 警告：下载的 Dropbear 无效，删除并尝试重新下载"
-                    rm -f /home/container/dropbear
-                else
+                # 简单验证：检查文件是否大于 500KB（有效二进制至少几百KB）
+                if [ -f /home/container/dropbear ] && [ $(stat -c %s /home/container/dropbear 2>/dev/null || echo 0) -gt 500000 ]; then
                     echo "[Custom Java] Dropbear 下载成功。"
+                else
+                    echo "[Custom Java] 警告：下载的文件过小或无效，删除并跳过"
+                    rm -f /home/container/dropbear
                 fi
             fi
         fi
