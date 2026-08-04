@@ -33,4 +33,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ env.LOWERCASE_REPO }}:latest   # 使用小写仓库名
+          tags: |
+            ghcr.io/${{ env.LOWERCASE_REPO }}:latest
+            ghcr.io/${{ env.LOWERCASE_REPO }}:${{ github.run_number }}
