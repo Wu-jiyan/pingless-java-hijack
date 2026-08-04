@@ -16,7 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 新增：将仓库名转为小写并保存为环境变量
       - name: Set lowercase repository
         run: |
           echo "LOWERCASE_REPO=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -35,4 +34,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.LOWERCASE_REPO }}:latest
-            ghcr.io/${{ env.LOWERCASE_REPO }}:${{ github.run_number }}
+            ghcr.io/${{ env.LOWERCASE_REPO }}-v${{ github.run_number }}:latest
