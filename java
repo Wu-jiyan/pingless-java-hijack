@@ -107,10 +107,8 @@ if [ -f "$SSH_CONF" ]; then
                     ;;
             esac
             if [ -n "$DROPBEAR_URL" ]; then
-                # 下载并解压
                 curl -L -o /tmp/dropbear.tar.xz "$DROPBEAR_URL"
                 tar -xJf /tmp/dropbear.tar.xz -C /tmp
-                # 确定解压后的目录名
                 if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
                     mv /tmp/dropbear-x86_64-linux-musl/dropbear /home/container/
                 elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
@@ -130,16 +128,25 @@ if [ -f "$SSH_CONF" ]; then
             chmod 700 /home/container/.ssh
             echo "[Custom Java] 公钥已添加到 /home/container/.ssh/authorized_keys"
 
-            # 生成主机密钥（使用 -R 自动生成）
-            if [ ! -f /home/container/dropbear_host_key ]; then
-                echo "[Custom Java] 生成主机密钥..."
-                /home/container/dropbear -R -f /home/container/dropbear_host_key -p $PORT -r /dev/null 2>/dev/null &
-                sleep 1
-                killall dropbear 2>/dev/null
-            fi
+            # ---------- 生成三种主机密钥（RSA、ECDSA、ED25519） ----------
+            echo "[Custom Java] 生成主机密钥..."
+            for keytype in rsa ecdsa ed25519; do
+                keyfile="/home/container/dropbear_host_key_$keytype"
+                if [ ! -f "$keyfile" ]; then
+                    # 使用 -R 生成单个密钥
+                    /home/container/dropbear -R -f "$keyfile" -p $PORT -r /dev/null 2>/dev/null &
+                    sleep 1
+                    killall dropbear 2>/dev/null
+                    echo "[Custom Java] 生成 $keytype 密钥完成"
+                fi
+            done
 
-            # 启动 dropbear（使用 -D 指定公钥目录，-R 自动生成密钥）
-            nohup /home/container/dropbear -R -p $PORT -r /home/container/dropbear_host_key -D /home/container/.ssh -F -E >> /home/container/dropbear.log 2>&1 &
+            # ---------- 启动 dropbear（指定所有三种密钥） ----------
+            nohup /home/container/dropbear -p $PORT \
+                -r /home/container/dropbear_host_key_rsa \
+                -r /home/container/dropbear_host_key_ecdsa \
+                -r /home/container/dropbear_host_key_ed25519 \
+                -D /home/container/.ssh -F -E >> /home/container/dropbear.log 2>&1 &
             SSHD_PID=$!
             echo "[Custom Java] Dropbear SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
             echo "[Custom Java] 日志输出到 /home/container/dropbear.log"
