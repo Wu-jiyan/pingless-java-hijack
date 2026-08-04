@@ -90,16 +90,16 @@ if [ -f "$SSH_CONF" ]; then
     if [ -z "$PUBKEY" ]; then
         echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
     else
-        # 下载 dropbear 静态二进制（简化验证，仅检查文件大小）
+        # 下载 dropbear 静态二进制（从 sagemathinc 仓库获取预编译版本）
         if [ ! -f /home/container/dropbear ]; then
             echo "[Custom Java] 下载 Dropbear 静态二进制..."
             ARCH=$(uname -m)
             case "$ARCH" in
                 x86_64|amd64)
-                    DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-amd64"
+                    DROPBEAR_URL="https://github.com/sagemathinc/dropbear/releases/latest/download/dropbear-x86_64-linux-musl.tar.xz"
                     ;;
                 aarch64|arm64)
-                    DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-aarch64"
+                    DROPBEAR_URL="https://github.com/sagemathinc/dropbear/releases/latest/download/dropbear-aarch64-linux-musl.tar.xz"
                     ;;
                 *)
                     echo "[Custom Java] 不支持的架构: $ARCH"
@@ -107,15 +107,22 @@ if [ -f "$SSH_CONF" ]; then
                     ;;
             esac
             if [ -n "$DROPBEAR_URL" ]; then
-                curl -L -o /home/container/dropbear "$DROPBEAR_URL"
-                chmod +x /home/container/dropbear
-                # 简单验证：检查文件是否大于 500KB（有效二进制至少几百KB）
-                if [ -f /home/container/dropbear ] && [ $(stat -c %s /home/container/dropbear 2>/dev/null || echo 0) -gt 500000 ]; then
+                # 下载压缩包
+                curl -L -o /tmp/dropbear.tar.xz "$DROPBEAR_URL"
+                # 解压
+                tar -xJf /tmp/dropbear.tar.xz -C /tmp
+                # 查找解压出的 dropbear 二进制文件
+                DROPBEAR_BIN=$(find /tmp -type f -name dropbear 2>/dev/null | head -n1)
+                if [ -n "$DROPBEAR_BIN" ] && [ -f "$DROPBEAR_BIN" ]; then
+                    mv "$DROPBEAR_BIN" /home/container/dropbear
+                    chmod +x /home/container/dropbear
                     echo "[Custom Java] Dropbear 下载成功。"
                 else
-                    echo "[Custom Java] 警告：下载的文件过小或无效，删除并跳过"
+                    echo "[Custom Java] 警告：解压后未找到 dropbear 二进制文件，跳过。"
                     rm -f /home/container/dropbear
                 fi
+                # 清理临时文件
+                rm -rf /tmp/dropbear.tar.xz /tmp/dropbear-* 2>/dev/null
             fi
         fi
 
