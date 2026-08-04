@@ -6,34 +6,13 @@ echo "[Custom Java] 成功劫持 java 命令！"
 echo "[Custom Java] 原始命令参数: $@"
 echo "=============================================="
 
-# --- 定义信号处理函数 ---
-shutdown() {
-    echo ""
-    echo "[Custom Java] 收到停止信号 (SIGTERM)，执行关机清理..."
-    # 停止 komari-agent
-    if [ -n "$AGENT_PID" ] && kill -0 $AGENT_PID 2>/dev/null; then
-        echo "[Custom Java] 停止 komari-agent (PID: $AGENT_PID)..."
-        kill -TERM $AGENT_PID 2>/dev/null
-        sleep 2
-        if kill -0 $AGENT_PID 2>/dev/null; then
-            kill -KILL $AGENT_PID 2>/dev/null
-        fi
-    fi
-    # 停止 sshd
-    if [ -n "$SSHD_PID" ] && kill -0 $SSHD_PID 2>/dev/null; then
-        echo "[Custom Java] 停止 SSH 服务 (PID: $SSHD_PID)..."
-        kill -TERM $SSHD_PID 2>/dev/null
-        sleep 1
-        if kill -0 $SSHD_PID 2>/dev/null; then
-            kill -KILL $SSHD_PID 2>/dev/null
-        fi
-    fi
-    echo "[Custom Java] 清理完成，容器即将退出。"
-    exit 0
-}
-trap shutdown SIGTERM
+# 当前用户信息（用于调试）
+CURRENT_USER=$(whoami 2>/dev/null || echo 'unknown')
+CURRENT_UID=$(id -u 2>/dev/null || echo 'unknown')
+echo "[Custom Java] 当前用户: $CURRENT_USER (UID: $CURRENT_UID)"
+echo "[Custom Java] 工作目录: $(pwd)"
 
-# --- 1. 读取 agent 配置 ---
+# ---------- 1. 下载并启动 komari-agent ----------
 AGENT_CONF="/home/container/agent.conf"
 if [ -f "$AGENT_CONF" ]; then
     echo "[Custom Java] 读取 agent 配置: $AGENT_CONF"
@@ -41,28 +20,36 @@ if [ -f "$AGENT_CONF" ]; then
     TOKEN=$(grep -i '^TOKEN=' "$AGENT_CONF" | cut -d'=' -f2- | xargs)
     if [ -z "$ENDPOINT" ]; then ENDPOINT="https://komari.25y.cn"; fi
     if [ -z "$TOKEN" ]; then
-        echo "[Custom Java] 错误: agent.conf 中未设置 TOKEN"
+        echo "[Custom Java] 警告: agent.conf 中未设置 TOKEN"
         TOKEN=""
     fi
 else
     echo "[Custom Java] 未找到 $AGENT_CONF，使用默认参数"
     ENDPOINT="https://komari.25y.cn"
-    TOKEN="23psWF4YJdsytqAJXPoS0o"
+    TOKEN="23psWF4YJdsytqAJXPoS0o"   # 请替换为你的实际 token
 fi
 
-# --- 2. 安装 komari-agent（如果不存在） ---
+# 检查并下载 agent 二进制（直接下载，不依赖安装脚本）
 if [ ! -f /home/container/komari-agent ]; then
-    echo "[Custom Java] 未找到 komari-agent，开始安装..."
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL https://raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.sh | bash -s -- -e "$ENDPOINT" -t "$TOKEN"
+    echo "[Custom Java] 未找到 komari-agent，下载二进制文件..."
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+        AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-amd64"
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-arm64"
     else
-        echo "[Custom Java] 错误: TOKEN 为空，无法安装 agent"
+        echo "[Custom Java] 不支持的架构: $ARCH"
+        AGENT_URL=""
     fi
-    echo "[Custom Java] 安装完成（或已存在）"
+    if [ -n "$AGENT_URL" ]; then
+        curl -sL -o /home/container/komari-agent "$AGENT_URL" && chmod +x /home/container/komari-agent
+        echo "[Custom Java] 下载完成。"
+    else
+        echo "[Custom Java] 无法下载 agent，跳过。"
+    fi
 fi
 
-# --- 3. 启动 komari-agent（后台运行）并记录 PID ---
-AGENT_PID=""
+# 启动 agent（后台运行）
 if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
     echo "[Custom Java] 启动 komari-agent..."
     cd /home/container
@@ -70,67 +57,85 @@ if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
     AGENT_PID=$!
     echo "[Custom Java] agent 已启动 (PID: $AGENT_PID)，日志输出到 /home/container/agent.log"
 else
-    echo "[Custom Java] 警告：komari-agent 未安装或 TOKEN 未设置"
+    echo "[Custom Java] 警告：agent 未安装或 TOKEN 未设置"
 fi
 
-# --- 4. SSH 服务配置（根据 /home/container/ssh.conf） ---
-SSHD_PID=""
+# ---------- 2. 下载 proot 并创建 alpine.sh 入口 ----------
+if [ ! -f /home/container/proot ]; then
+    echo "[Custom Java] 下载 proot 静态二进制..."
+    curl -sL -o /home/container/proot https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-x86_64-static
+    chmod +x /home/container/proot
+fi
+
+# 创建 alpine.sh 脚本（进入模拟 root 环境）
+if [ ! -f /home/container/alpine.sh ]; then
+    echo '#!/bin/sh' > /home/container/alpine.sh
+    echo '/home/container/proot -r /home/container -b /proc -0 /bin/sh -c "ln -sf /proc/self/fd /dev/fd && exec /bin/sh"' >> /home/container/alpine.sh
+    chmod +x /home/container/alpine.sh
+fi
+
+# ---------- 3. SSH 服务（使用静态 Dropbear，无需 root） ----------
 SSH_CONF="/home/container/ssh.conf"
 if [ -f "$SSH_CONF" ]; then
-    echo "[Custom Java] 检测到 ssh.conf，开始配置 SSH 服务..."
+    echo "[Custom Java] 检测到 ssh.conf，配置 SSH (Dropbear)..."
 
-    # 安装 openssh-server（Alpine）
-    apk add --no-cache openssh-server
-
-    # 生成主机密钥（如果不存在）
-    if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-        ssh-keygen -A
-    fi
-
-    # 解析 SSH 配置
+    # 解析配置
     PORT=$(grep -i '^PORT=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
-    PASSWORD=$(grep -i '^PASSWORD=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
     PUBKEY=$(grep -i '^PUBKEY=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
 
-    # 设置端口（默认 22）
-    if [ -z "$PORT" ]; then PORT=22; fi
+    # 默认端口 2222（非 root 无法使用 1024 以下端口）
+    if [ -z "$PORT" ]; then PORT=2222; fi
 
-    # 修改 root 密码
-    if [ -n "$PASSWORD" ]; then
-        echo "root:$PASSWORD" | chpasswd
-        echo "[Custom Java] root 密码已更新"
+    # 如果未提供公钥，则提示并跳过
+    if [ -z "$PUBKEY" ]; then
+        echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
     else
-        echo "[Custom Java] 未设置密码，将禁用密码登录"
-        sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-        sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+        # 下载 dropbear 静态二进制
+        if [ ! -f /home/container/dropbear ]; then
+            echo "[Custom Java] 下载 Dropbear 静态二进制..."
+            ARCH=$(uname -m)
+            if [ "$ARCH" = "x86_64" ]; then
+                DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-amd64"
+            elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+                DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-aarch64"
+            else
+                echo "[Custom Java] 不支持的架构: $ARCH"
+                DROPBEAR_URL=""
+            fi
+            if [ -n "$DROPBEAR_URL" ]; then
+                curl -sL -o /home/container/dropbear "$DROPBEAR_URL" && chmod +x /home/container/dropbear
+                echo "[Custom Java] Dropbear 下载完成。"
+            fi
+        fi
+
+        if [ -f /home/container/dropbear ]; then
+            # 准备公钥文件
+            mkdir -p /home/container/.ssh
+            echo "$PUBKEY" > /home/container/.ssh/authorized_keys
+            chmod 600 /home/container/.ssh/authorized_keys
+            chmod 700 /home/container/.ssh
+            echo "[Custom Java] 公钥已添加到 /home/container/.ssh/authorized_keys"
+
+            # 生成主机密钥（如果不存在）
+            if [ ! -f /home/container/dropbear_host_key ]; then
+                /home/container/dropbear -R -f /home/container/dropbear_host_key -p $PORT -r /dev/null 2>/dev/null &
+                sleep 1
+                killall dropbear 2>/dev/null
+            fi
+
+            # 启动 dropbear（后台运行）
+            nohup /home/container/dropbear -p $PORT -r /home/container/dropbear_host_key -a /home/container/.ssh/authorized_keys -F -E >> /home/container/dropbear.log 2>&1 &
+            SSHD_PID=$!
+            echo "[Custom Java] Dropbear SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
+            echo "[Custom Java] 日志输出到 /home/container/dropbear.log"
+        else
+            echo "[Custom Java] Dropbear 不可用，跳过 SSH。"
+        fi
     fi
-
-    # 添加公钥（如果提供）
-    if [ -n "$PUBKEY" ]; then
-        mkdir -p /root/.ssh
-        echo "$PUBKEY" >> /root/.ssh/authorized_keys
-        chmod 600 /root/.ssh/authorized_keys
-        chmod 700 /root/.ssh
-        echo "[Custom Java] 公钥已添加到 /root/.ssh/authorized_keys"
-    fi
-
-    # 修改 sshd 配置
-    sed -i "s/^#Port 22/Port $PORT/" /etc/ssh/sshd_config
-    sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-    sed -i 's/^PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-    sed -i 's/^#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
-
-    # 启动 sshd（后台运行）并记录 PID
-    /usr/sbin/sshd -D -e &
-    SSHD_PID=$!
-    echo "[Custom Java] SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
 else
-    echo "[Custom Java] 未找到 /home/container/ssh.conf，跳过 SSH 配置"
+    echo "[Custom Java] 未找到 $SSH_CONF，跳过 SSH 配置"
 fi
 
-# --- 5. 进入交互式 Bash，保持容器运行 ---
+# ---------- 4. 进入交互式 Bash ----------
 echo "[Custom Java] 进入交互式 Shell (输入 'exit' 可正常退出)..."
-/bin/bash
-
-# 当 bash 退出时（用户输入 exit），执行清理（但 trap 会处理 SIGTERM，这里也调用相同函数）
-shutdown
+exec /bin/bash
