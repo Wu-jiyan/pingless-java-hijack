@@ -6,7 +6,7 @@ echo "[Custom Java] 成功劫持 java 命令！"
 echo "[Custom Java] 原始命令参数: $@"
 echo "=============================================="
 
-# 当前用户信息（用于调试）
+# 当前用户信息
 CURRENT_USER=$(whoami 2>/dev/null || echo 'unknown')
 CURRENT_UID=$(id -u 2>/dev/null || echo 'unknown')
 echo "[Custom Java] 当前用户: $CURRENT_USER (UID: $CURRENT_UID)"
@@ -60,104 +60,48 @@ else
     echo "[Custom Java] 警告：agent 未安装或 TOKEN 未设置"
 fi
 
-# ---------- 2. 下载 proot 并创建 alpine.sh 入口 ----------
-if [ ! -f /home/container/proot ]; then
-    echo "[Custom Java] 下载 proot 静态二进制..."
-    curl -sL -o /home/container/proot https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-x86_64-static
-    chmod +x /home/container/proot
-fi
-
-# 创建 alpine.sh 脚本（进入模拟 root 环境）
-if [ ! -f /home/container/alpine.sh ]; then
-    echo '#!/bin/sh' > /home/container/alpine.sh
-    echo '/home/container/proot -r /home/container -b /proc -0 /bin/sh -c "ln -sf /proc/self/fd /dev/fd && exec /bin/sh"' >> /home/container/alpine.sh
-    chmod +x /home/container/alpine.sh
-fi
-
-# ---------- 3. SSH 服务（使用静态 Dropbear，无需 root） ----------
+# ---------- 2. 配置 SSH ----------
 SSH_CONF="/home/container/ssh.conf"
 if [ -f "$SSH_CONF" ]; then
-    echo "[Custom Java] 检测到 ssh.conf，配置 SSH (Dropbear)..."
-
-    # 解析配置
     PORT=$(grep -i '^PORT=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
     PUBKEY=$(grep -i '^PUBKEY=' "$SSH_CONF" | cut -d'=' -f2- | xargs)
+    [ -z "$PORT" ] && PORT=2222
+    if [ -n "$PUBKEY" ]; then
+        mkdir -p /home/container/.ssh
+        echo "$PUBKEY" > /home/container/.ssh/authorized_keys
+        chmod 600 /home/container/.ssh/authorized_keys
+        chmod 700 /home/container/.ssh
 
-    # 默认端口 2222
-    if [ -z "$PORT" ]; then PORT=2222; fi
+        # 生成主机密钥（如果不存在）
+        SSH_KEY_DIR="/home/container/ssh_host_keys"
+        mkdir -p "$SSH_KEY_DIR"
+        if [ ! -f "$SSH_KEY_DIR/ssh_host_rsa_key" ]; then
+            ssh-keygen -t rsa -f "$SSH_KEY_DIR/ssh_host_rsa_key" -N "" -q
+            ssh-keygen -t ecdsa -f "$SSH_KEY_DIR/ssh_host_ecdsa_key" -N "" -q
+            ssh-keygen -t ed25519 -f "$SSH_KEY_DIR/ssh_host_ed25519_key" -N "" -q
+        fi
 
-    # 如果未提供公钥，则提示并跳过
-    if [ -z "$PUBKEY" ]; then
-        echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
+        echo "[Custom Java] 启动 SSH 服务（前台运行）..."
+        # 替换当前进程为 sshd，成为容器主进程
+        exec /usr/sbin/sshd -D -e -p "$PORT" \
+            -o "UsePrivilegeSeparation no" \
+            -o "HostKey $SSH_KEY_DIR/ssh_host_rsa_key" \
+            -o "HostKey $SSH_KEY_DIR/ssh_host_ecdsa_key" \
+            -o "HostKey $SSH_KEY_DIR/ssh_host_ed25519_key" \
+            -o "AuthorizedKeysFile /home/container/.ssh/authorized_keys" \
+            -o "PubkeyAuthentication yes" \
+            -o "PasswordAuthentication no" \
+            -o "PermitEmptyPasswords no" \
+            -o "PermitRootLogin no" \
+            -o "PidFile /home/container/sshd.pid"
+        # 注意：exec 会替换当前 shell，后续命令不再执行
     else
-        # 下载 dropbear 静态二进制
-        if [ ! -f /home/container/dropbear ]; then
-            echo "[Custom Java] 下载 Dropbear 静态二进制..."
-            ARCH=$(uname -m)
-            case "$ARCH" in
-                x86_64|amd64)
-                    DROPBEAR_URL="https://github.com/sagemathinc/dropbear/releases/latest/download/dropbear-x86_64-linux-musl.tar.xz"
-                    ;;
-                aarch64|arm64)
-                    DROPBEAR_URL="https://github.com/sagemathinc/dropbear/releases/latest/download/dropbear-aarch64-linux-musl.tar.xz"
-                    ;;
-                *)
-                    echo "[Custom Java] 不支持的架构: $ARCH"
-                    DROPBEAR_URL=""
-                    ;;
-            esac
-            if [ -n "$DROPBEAR_URL" ]; then
-                curl -L -o /tmp/dropbear.tar.xz "$DROPBEAR_URL"
-                tar -xJf /tmp/dropbear.tar.xz -C /tmp
-                if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
-                    mv /tmp/dropbear-x86_64-linux-musl/dropbear /home/container/
-                elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-                    mv /tmp/dropbear-aarch64-linux-musl/dropbear /home/container/
-                fi
-                chmod +x /home/container/dropbear
-                rm -rf /tmp/dropbear.tar.xz /tmp/dropbear-x86_64-linux-musl /tmp/dropbear-aarch64-linux-musl 2>/dev/null
-                echo "[Custom Java] Dropbear 下载完成。"
-            fi
-        fi
-
-        if [ -f /home/container/dropbear ]; then
-            # 准备公钥文件
-            mkdir -p /home/container/.ssh
-            echo "$PUBKEY" > /home/container/.ssh/authorized_keys
-            chmod 600 /home/container/.ssh/authorized_keys
-            chmod 700 /home/container/.ssh
-            echo "[Custom Java] 公钥已添加到 /home/container/.ssh/authorized_keys"
-
-            # ---------- 生成三种主机密钥（RSA、ECDSA、ED25519） ----------
-            echo "[Custom Java] 生成主机密钥..."
-            for keytype in rsa ecdsa ed25519; do
-                keyfile="/home/container/dropbear_host_key_$keytype"
-                if [ ! -f "$keyfile" ]; then
-                    # 使用 -R 生成单个密钥
-                    /home/container/dropbear -R -f "$keyfile" -p $PORT -r /dev/null 2>/dev/null &
-                    sleep 1
-                    killall dropbear 2>/dev/null
-                    echo "[Custom Java] 生成 $keytype 密钥完成"
-                fi
-            done
-
-            # ---------- 启动 dropbear（指定所有三种密钥） ----------
-            nohup /home/container/dropbear -p $PORT \
-                -r /home/container/dropbear_host_key_rsa \
-                -r /home/container/dropbear_host_key_ecdsa \
-                -r /home/container/dropbear_host_key_ed25519 \
-                -D /home/container/.ssh -F -E >> /home/container/dropbear.log 2>&1 &
-            SSHD_PID=$!
-            echo "[Custom Java] Dropbear SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
-            echo "[Custom Java] 日志输出到 /home/container/dropbear.log"
-        else
-            echo "[Custom Java] Dropbear 不可用，跳过 SSH。"
-        fi
+        echo "[Custom Java] ssh.conf 缺少 PUBKEY，跳过 SSH"
     fi
 else
-    echo "[Custom Java] 未找到 $SSH_CONF，跳过 SSH 配置"
+    echo "[Custom Java] 未找到 ssh.conf，跳过 SSH"
 fi
 
-# ---------- 4. 进入交互式 Bash ----------
-echo "[Custom Java] 进入交互式 Shell (输入 'exit' 可正常退出)..."
-exec /bin/bash
+# 如果未启动 SSH（例如配置缺失），则 fallback 到保持容器存活
+echo "[Custom Java] 未启用 SSH，容器将保持运行（无交互终端）"
+exec tail -f /dev/null   # 或者 exec sleep infinity
