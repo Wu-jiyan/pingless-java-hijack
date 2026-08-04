@@ -49,17 +49,24 @@ if [ -f "$SSH_CONF" ]; then
         chmod 600 /home/container/.ssh/authorized_keys
         chmod 700 /home/container/.ssh
 
-        # 生成主机密钥（如果不存在）
+        # ---------- 生成主机密钥 ----------
         SSH_KEY_DIR="/home/container/ssh_host_keys"
         mkdir -p "$SSH_KEY_DIR"
+        chmod 700 "$SSH_KEY_DIR"   # 确保只有用户可读写
+        
+        # 如果密钥不存在则生成
         if [ ! -f "$SSH_KEY_DIR/ssh_host_rsa_key" ]; then
             echo "[Custom Java] 生成 SSH 主机密钥..."
-            ssh-keygen -t rsa -f "$SSH_KEY_DIR/ssh_host_rsa_key" -N "" -q
-            ssh-keygen -t ecdsa -f "$SSH_KEY_DIR/ssh_host_ecdsa_key" -N "" -q
-            ssh-keygen -t ed25519 -f "$SSH_KEY_DIR/ssh_host_ed25519_key" -N "" -q
-            # 检查生成是否成功
-            if [ ! -f "$SSH_KEY_DIR/ssh_host_rsa_key" ]; then
-                echo "[Custom Java] 错误：主机密钥生成失败！"
+            # 使用完整路径的 ssh-keygen，并重定向错误输出以便调试
+            if ! /usr/bin/ssh-keygen -t rsa -f "$SSH_KEY_DIR/ssh_host_rsa_key" -N "" -q 2>/dev/null; then
+                echo "[Custom Java] 错误：生成 RSA 密钥失败"
+                SSH_ENABLED=0
+            elif ! /usr/bin/ssh-keygen -t ecdsa -f "$SSH_KEY_DIR/ssh_host_ecdsa_key" -N "" -q 2>/dev/null; then
+                echo "[Custom Java] 错误：生成 ECDSA 密钥失败"
+                SSH_ENABLED=0
+            elif ! /usr/bin/ssh-keygen -t ed25519 -f "$SSH_KEY_DIR/ssh_host_ed25519_key" -N "" -q 2>/dev/null; then
+                echo "[Custom Java] 错误：生成 ED25519 密钥失败"
+                SSH_ENABLED=0
             else
                 SSH_ENABLED=1
             fi
