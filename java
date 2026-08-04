@@ -107,7 +107,7 @@ if [ -f "$SSH_CONF" ]; then
                     ;;
             esac
             if [ -n "$DROPBEAR_URL" ]; then
-                curl -sL -o /home/container/dropbear "$DROPBEAR_URL"
+                curl -L -o /home/container/dropbear "$DROPBEAR_URL"
                 chmod +x /home/container/dropbear
                 # 简单验证：检查文件是否大于 500KB（有效二进制至少几百KB）
                 if [ -f /home/container/dropbear ] && [ $(stat -c %s /home/container/dropbear 2>/dev/null || echo 0) -gt 500000 ]; then
