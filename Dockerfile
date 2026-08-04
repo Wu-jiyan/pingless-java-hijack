@@ -13,7 +13,7 @@ RUN chmod +x /usr/local/bin/java
 # 默认工作目录
 WORKDIR /home/container
 
-# 切换到 container 用户
-USER container
+# 暂时不切换到 container 用户
+# USER container
 
 # 不设 CMD/ENTRYPOINT，因为面板会传 java -Xms... 来执行
