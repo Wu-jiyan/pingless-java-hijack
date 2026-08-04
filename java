@@ -90,21 +90,32 @@ if [ -f "$SSH_CONF" ]; then
     if [ -z "$PUBKEY" ]; then
         echo "[Custom Java] ssh.conf 中未设置 PUBKEY，无法启用 SSH（非 root 仅支持公钥认证）"
     else
-        # 下载 dropbear 静态二进制
+        # 下载 dropbear 静态二进制（带验证）
         if [ ! -f /home/container/dropbear ]; then
             echo "[Custom Java] 下载 Dropbear 静态二进制..."
             ARCH=$(uname -m)
-            if [ "$ARCH" = "x86_64" ]; then
-                DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-amd64"
-            elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-                DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-aarch64"
-            else
-                echo "[Custom Java] 不支持的架构: $ARCH"
-                DROPBEAR_URL=""
-            fi
+            case "$ARCH" in
+                x86_64|amd64)
+                    DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-amd64"
+                    ;;
+                aarch64|arm64)
+                    DROPBEAR_URL="https://github.com/mkj/dropbear/releases/latest/download/dropbear-static-linux-aarch64"
+                    ;;
+                *)
+                    echo "[Custom Java] 不支持的架构: $ARCH"
+                    DROPBEAR_URL=""
+                    ;;
+            esac
             if [ -n "$DROPBEAR_URL" ]; then
-                curl -sL -o /home/container/dropbear "$DROPBEAR_URL" && chmod +x /home/container/dropbear
-                echo "[Custom Java] Dropbear 下载完成。"
+                curl -sL -o /home/container/dropbear "$DROPBEAR_URL"
+                chmod +x /home/container/dropbear
+                # 验证文件是否有效
+                if ! file /home/container/dropbear | grep -q "ELF.*executable"; then
+                    echo "[Custom Java] 警告：下载的 Dropbear 无效，删除并尝试重新下载"
+                    rm -f /home/container/dropbear
+                else
+                    echo "[Custom Java] Dropbear 下载成功。"
+                fi
             fi
         fi
 
