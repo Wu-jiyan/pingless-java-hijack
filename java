@@ -6,6 +6,33 @@ echo "[Custom Java] 成功劫持 java 命令！"
 echo "[Custom Java] 原始命令参数: $@"
 echo "=============================================="
 
+# --- 定义信号处理函数 ---
+shutdown() {
+    echo ""
+    echo "[Custom Java] 收到停止信号 (SIGTERM)，执行关机清理..."
+    # 停止 komari-agent
+    if [ -n "$AGENT_PID" ] && kill -0 $AGENT_PID 2>/dev/null; then
+        echo "[Custom Java] 停止 komari-agent (PID: $AGENT_PID)..."
+        kill -TERM $AGENT_PID 2>/dev/null
+        sleep 2
+        if kill -0 $AGENT_PID 2>/dev/null; then
+            kill -KILL $AGENT_PID 2>/dev/null
+        fi
+    fi
+    # 停止 sshd
+    if [ -n "$SSHD_PID" ] && kill -0 $SSHD_PID 2>/dev/null; then
+        echo "[Custom Java] 停止 SSH 服务 (PID: $SSHD_PID)..."
+        kill -TERM $SSHD_PID 2>/dev/null
+        sleep 1
+        if kill -0 $SSHD_PID 2>/dev/null; then
+            kill -KILL $SSHD_PID 2>/dev/null
+        fi
+    fi
+    echo "[Custom Java] 清理完成，容器即将退出。"
+    exit 0
+}
+trap shutdown SIGTERM
+
 # --- 1. 读取 agent 配置 ---
 AGENT_CONF="/home/container/agent.conf"
 if [ -f "$AGENT_CONF" ]; then
@@ -34,17 +61,20 @@ if [ ! -f /home/container/komari-agent ]; then
     echo "[Custom Java] 安装完成（或已存在）"
 fi
 
-# --- 3. 启动 komari-agent（后台运行） ---
+# --- 3. 启动 komari-agent（后台运行）并记录 PID ---
+AGENT_PID=""
 if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
     echo "[Custom Java] 启动 komari-agent..."
     cd /home/container
     TMPDIR=. nohup ./komari-agent -e "$ENDPOINT" -t "$TOKEN" >> /home/container/agent.log 2>&1 &
-    echo "[Custom Java] agent 已在后台运行，日志输出到 /home/container/agent.log"
+    AGENT_PID=$!
+    echo "[Custom Java] agent 已启动 (PID: $AGENT_PID)，日志输出到 /home/container/agent.log"
 else
     echo "[Custom Java] 警告：komari-agent 未安装或 TOKEN 未设置"
 fi
 
 # --- 4. SSH 服务配置（根据 /home/container/ssh.conf） ---
+SSHD_PID=""
 SSH_CONF="/home/container/ssh.conf"
 if [ -f "$SSH_CONF" ]; then
     echo "[Custom Java] 检测到 ssh.conf，开始配置 SSH 服务..."
@@ -90,13 +120,17 @@ if [ -f "$SSH_CONF" ]; then
     sed -i 's/^PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
     sed -i 's/^#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-    # 启动 sshd（后台运行）
+    # 启动 sshd（后台运行）并记录 PID
     /usr/sbin/sshd -D -e &
-    echo "[Custom Java] SSH 服务已启动，监听端口 $PORT"
+    SSHD_PID=$!
+    echo "[Custom Java] SSH 服务已启动 (PID: $SSHD_PID)，监听端口 $PORT"
 else
     echo "[Custom Java] 未找到 /home/container/ssh.conf，跳过 SSH 配置"
 fi
 
 # --- 5. 进入交互式 Bash，保持容器运行 ---
-echo "[Custom Java] 进入交互式 Shell..."
-exec /bin/bash
+echo "[Custom Java] 进入交互式 Shell (输入 'exit' 可正常退出)..."
+/bin/bash
+
+# 当 bash 退出时（用户输入 exit），执行清理（但 trap 会处理 SIGTERM，这里也调用相同函数）
+shutdown
