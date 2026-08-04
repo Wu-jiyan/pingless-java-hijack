@@ -20,3 +20,8 @@ RUN mkdir -p /var/run/sshd && chown -R 999:999 /var/run/sshd
 
 # 设置工作目录（确保 uid 999 有写权限）
 WORKDIR /home/container
+
+# 设置入口点为你的劫持脚本
+ENTRYPOINT ["/usr/local/bin/java"]
+# 可选：设置默认 CMD 为空，避免面板覆盖
+CMD []
