@@ -7,8 +7,9 @@ RUN sed -i '/^[^:]*:[^:]*:999:/d' /etc/passwd && \
 
 RUN adduser -D -h /home/container -u 999 container
 
+# ----- 安装 sudo，并将 container 加入 wheel 组（用 addgroup）-----
 RUN apk add --no-cache sudo && \
-    usermod -aG wheel container && \
+    addgroup container wheel && \
     echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
 COPY java /usr/local/bin/java
