@@ -1,23 +1,33 @@
-FROM alpine:latest
+FROM ubuntu:22.04
 
-# 安装所有需要的软件包（包括 SFTP 子系统）
-RUN apk add --no-cache \
+# 设置非交互式安装，避免 tzdata 等包卡住
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 更新软件源并安装必要软件
+RUN apt-get update && apt-get install -y \
     bash curl openssh-server sudo \
-    python3 py3-pip vim htop git wget unzip \
-    openssh-sftp-server
+    python3 python3-pip vim htop git wget unzip \
+    openssh-sftp-server \
+    && rm -rf /var/lib/apt/lists/*
 
-# 清理 uid/gid=999 冲突
-RUN sed -i '/^[^:]*:[^:]*:999:/d' /etc/passwd && \
-    sed -i '/^[^:]*:[^:]*:999:/d' /etc/group
+# 清理可能存在的 uid=999 冲突（Ubuntu 默认没有，但安全起见）
+RUN if getent passwd 999 > /dev/null 2>&1; then \
+        userdel -r $(getent passwd 999 | cut -d: -f1); \
+    fi && \
+    if getent group 999 > /dev/null 2>&1; then \
+        groupdel $(getent group 999 | cut -d: -f1); \
+    fi
 
-# 创建 container 用户并加入 wheel 组
-RUN adduser -D -h /home/container -u 999 container && \
-    addgroup container wheel && \
-    echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+# 创建 container 用户（uid=999），家目录 /home/container
+RUN useradd -m -u 999 -s /bin/bash container && \
+    usermod -aG sudo container && \
+    echo '%sudo ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
+# 复制劫持脚本
 COPY java /usr/local/bin/java
 RUN chmod +x /usr/local/bin/java
 
+# 创建 SSH 运行时目录并授权
 RUN mkdir -p /var/run/sshd && chown -R 999:999 /var/run/sshd
 
 WORKDIR /home/container
