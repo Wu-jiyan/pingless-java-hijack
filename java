@@ -34,9 +34,8 @@ if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
     echo "[Custom Java] agent 已启动 (PID: $!)"
 fi
 
-# ---------- 2. 准备 proot（模拟 root 环境） ----------
+# ---------- 2. 下载 proot（用于手动提权） ----------
 PROOT_PATH="/home/container/proot"
-PROOT_ENABLED=0
 if [ ! -f "$PROOT_PATH" ]; then
     echo "[Custom Java] 下载 proot..."
     ARCH=$(uname -m)
@@ -50,18 +49,19 @@ if [ ! -f "$PROOT_PATH" ]; then
     fi
 fi
 
+# 添加别名（proot 和 stop）
+BASHRC="/home/container/.bashrc"
 if [ -f "$PROOT_PATH" ]; then
-    # 创建 proot 登录包装脚本
-    cat > /home/container/proot-shell << 'EOF'
-#!/bin/sh
-exec /home/container/proot -0 /bin/bash --login
-EOF
-    chmod +x /home/container/proot-shell
-    chown container:container /home/container/proot-shell 2>/dev/null || true
-    PROOT_ENABLED=1
-    echo "[Custom Java] proot 已就绪，将自动为 SSH 登录启用模拟 root"
-else
-    echo "[Custom Java] proot 不可用，SSH 登录将保持普通用户"
+    if ! grep -q "alias proot=" "$BASHRC" 2>/dev/null; then
+        echo "alias proot='/home/container/proot -0 /bin/bash'" >> "$BASHRC"
+        echo "[Custom Java] 已添加别名：输入 'proot' 进入模拟 root"
+    fi
+fi
+
+# 添加 stop 别名（软关机：终止 PID 1 的 sshd）
+if ! grep -q "alias stop=" "$BASHRC" 2>/dev/null; then
+    echo "alias stop='kill -TERM 1'" >> "$BASHRC"
+    echo "[Custom Java] 已添加别名：输入 'stop' 即可停止容器（软关机）"
 fi
 
 # ---------- 3. 配置 SSH 服务 ----------
@@ -73,13 +73,11 @@ if [ -f "$SSH_CONF" ]; then
     [ -z "$PORT" ] && PORT=2222
 
     if [ -n "$PUBKEY" ]; then
-        # 准备 authorized_keys
         mkdir -p /home/container/.ssh
         echo "$PUBKEY" > /home/container/.ssh/authorized_keys
         chmod 600 /home/container/.ssh/authorized_keys
         chmod 700 /home/container/.ssh
 
-        # ---------- 生成主机密钥 ----------
         SSH_KEY_DIR="/home/container/ssh_host_keys"
         mkdir -p "$SSH_KEY_DIR"
         chmod 700 "$SSH_KEY_DIR"
@@ -108,11 +106,10 @@ else
     echo "[Custom Java] 未找到 ssh.conf，跳过 SSH"
 fi
 
-# ---------- 4. 启动前台进程（sshd） ----------
+# ---------- 4. 启动 SSH 服务（前台） ----------
 if [ $SSH_ENABLED -eq 1 ]; then
     echo "[Custom Java] 启动 SSH 服务（前台运行）..."
 
-    # 生成 sshd 配置文件
     SSH_CONFIG_FILE="/home/container/sshd_config_custom"
     cat > "$SSH_CONFIG_FILE" << EOF
 Port $PORT
@@ -125,27 +122,16 @@ PasswordAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin no
 PidFile /home/container/sshd.pid
+Subsystem sftp /usr/lib/ssh/sftp-server
 EOF
 
-    # 如果 proot 可用，强制 container 用户登录后执行 proot-shell
-    if [ $PROOT_ENABLED -eq 1 ]; then
-        cat >> "$SSH_CONFIG_FILE" << EOF
-Match User container
-    ForceCommand /home/container/proot-shell
-EOF
-        echo "[Custom Java] 已设置 SSH 登录自动进入 proot 模拟 root"
-    fi
-
-    # 使用 -f 指定配置文件启动 sshd
     exec /usr/sbin/sshd -D -e -f "$SSH_CONFIG_FILE"
-    # 若 exec 失败则继续 fallback
     echo "[Custom Java] SSH 服务意外退出，进入 fallback 模式"
 else
     echo "[Custom Java] SSH 未启用，容器将保持运行"
 fi
 
-# ---------- 5. Fallback：保持容器存活 ----------
-# 如果 SSH 未启用或启动失败，则维持一个交互式 bash 循环，方便通过控制台调试
+# ---------- 5. Fallback ----------
 while true; do
     /bin/bash
     echo "bash 退出，重启中..."
