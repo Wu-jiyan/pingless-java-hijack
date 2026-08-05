@@ -53,8 +53,8 @@ fi
 BASHRC="/home/container/.bashrc"
 if [ -f "$PROOT_PATH" ]; then
     if ! grep -q "alias proot=" "$BASHRC" 2>/dev/null; then
-        echo "alias proot='/home/container/proot -0 /bin/bash'" >> "$BASHRC"
-        echo "[Custom Java] 已添加别名：输入 'proot' 进入模拟 root"
+        echo "alias proot='/home/container/proot -0 -b /proc -b /dev -b /sys -b /etc/resolv.conf'" >> "$BASHRC"
+        echo "[Custom Java] 已添加别名：输入 'proot' 进入模拟 root（带系统绑定）"
     fi
 fi
 
