@@ -6,32 +6,44 @@ echo "[Custom Java] 成功劫持 java 命令！"
 echo "[Custom Java] 原始命令参数: $@"
 echo "=============================================="
 
-# ---------- 1. 启动 komari-agent（后台） ----------
+# ---------- 1. 启动 komari-agent（根据 agent.conf 决定） ----------
 AGENT_CONF="/home/container/agent.conf"
+AGENT_ENABLED=0
 if [ -f "$AGENT_CONF" ]; then
     ENDPOINT=$(grep -i '^ENDPOINT=' "$AGENT_CONF" | cut -d'=' -f2- | xargs)
     TOKEN=$(grep -i '^TOKEN=' "$AGENT_CONF" | cut -d'=' -f2- | xargs)
-fi
-[ -z "$ENDPOINT" ] && ENDPOINT="https://komari.25y.cn"
-[ -z "$TOKEN" ] && TOKEN="23psWF4YJdsytqAJXPoS0o"
-
-# 下载 agent（如果不存在）
-if [ ! -f /home/container/komari-agent ]; then
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64)   AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-amd64" ;;
-        aarch64|arm64) AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-arm64" ;;
-        *) echo "不支持的架构: $ARCH"; AGENT_URL="" ;;
-    esac
-    if [ -n "$AGENT_URL" ]; then
-        curl -sL -o /home/container/komari-agent "$AGENT_URL" && chmod +x /home/container/komari-agent
+    if [ -n "$TOKEN" ] && [ -n "$ENDPOINT" ]; then
+        AGENT_ENABLED=1
+        echo "[Custom Java] agent.conf 已找到，将启动 komari-agent"
+    else
+        echo "[Custom Java] agent.conf 缺少 TOKEN 或 ENDPOINT，跳过 agent"
     fi
+else
+    echo "[Custom Java] 未找到 agent.conf，跳过 agent"
 fi
 
-if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
-    cd /home/container
-    TMPDIR=. nohup ./komari-agent -e "$ENDPOINT" -t "$TOKEN" >> agent.log 2>&1 &
-    echo "[Custom Java] agent 已启动 (PID: $!)"
+# 如果 agent 启用，则下载并启动
+if [ $AGENT_ENABLED -eq 1 ]; then
+    # 下载 agent（如果不存在）
+    if [ ! -f /home/container/komari-agent ]; then
+        ARCH=$(uname -m)
+        case "$ARCH" in
+            x86_64)   AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-amd64" ;;
+            aarch64|arm64) AGENT_URL="https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-arm64" ;;
+            *) echo "不支持的架构: $ARCH"; AGENT_URL="" ;;
+        esac
+        if [ -n "$AGENT_URL" ]; then
+            curl -sL -o /home/container/komari-agent "$AGENT_URL" && chmod +x /home/container/komari-agent
+        fi
+    fi
+
+    if [ -f /home/container/komari-agent ] && [ -n "$TOKEN" ]; then
+        cd /home/container
+        TMPDIR=. nohup ./komari-agent -e "$ENDPOINT" -t "$TOKEN" >> agent.log 2>&1 &
+        echo "[Custom Java] agent 已启动 (PID: $!)"
+    else
+        echo "[Custom Java] agent 二进制下载失败，跳过"
+    fi
 fi
 
 # ---------- 2. 下载 proot（用于手动提权） ----------
@@ -49,7 +61,7 @@ if [ ! -f "$PROOT_PATH" ]; then
     fi
 fi
 
-# 添加别名（proot 和 stop）
+# ----- 添加别名（proot 和 stop）并确保登录自动加载 -----
 BASHRC="/home/container/.bashrc"
 if [ -f "$PROOT_PATH" ]; then
     if ! grep -q "alias proot=" "$BASHRC" 2>/dev/null; then
@@ -62,6 +74,18 @@ fi
 if ! grep -q "alias stop=" "$BASHRC" 2>/dev/null; then
     echo "alias stop='kill -TERM 1'" >> "$BASHRC"
     echo "[Custom Java] 已添加别名：输入 'stop' 即可停止容器（软关机）"
+fi
+
+# 创建 .bash_profile 确保登录时加载 .bashrc
+BASHPROFILE="/home/container/.bash_profile"
+if [ ! -f "$BASHPROFILE" ]; then
+    echo 'if [ -f ~/.bashrc ]; then . ~/.bashrc; fi' > "$BASHPROFILE"
+    echo "[Custom Java] 已创建 .bash_profile 并设置为加载 .bashrc"
+else
+    if ! grep -q "\. ~/.bashrc" "$BASHPROFILE"; then
+        echo 'if [ -f ~/.bashrc ]; then . ~/.bashrc; fi' >> "$BASHPROFILE"
+        echo "[Custom Java] 已向 .bash_profile 追加加载 .bashrc 的逻辑"
+    fi
 fi
 
 # ---------- 3. 配置 SSH 服务 ----------
