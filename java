@@ -146,7 +146,7 @@ PasswordAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin no
 PidFile /home/container/sshd.pid
-Subsystem sftp /usr/lib/ssh/sftp-server
+Subsystem sftp internal-sftp
 EOF
 
     exec /usr/sbin/sshd -D -e -f "$SSH_CONFIG_FILE"
